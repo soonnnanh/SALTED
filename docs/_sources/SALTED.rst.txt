@@ -1,0 +1,7 @@
+SALTED module
+=============
+
+.. automodule:: SALTED
+   :members:
+   :undoc-members:
+   :show-inheritance:
