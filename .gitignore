@@ -32,3 +32,5 @@ src/logs/*.log
 # Dont save results or data (might be a lot of stuff)
 results/*
 data/*
+src/client_secret.json
+src/credentials.json
