@@ -9,21 +9,21 @@ os.chdir("./src")
 from modules.helpers.plotters import plotCustomiser
 
 class univariateEstimator:
-    def __init__(self, times=None, events=None, times_enter = None, weights = None, type = 'kaplan-meier'):
+    def __init__(self, times=None, events=None, times_enter = None, weights = None, method = 'kaplan-meier'):
 
 
         self.times = times
         self.events = events
         self.times_enter = times_enter
         self.weights = weights
-        self.type = type
+        self.survival_method = method
 
         assert len(times) == len(events)
         if times_enter is not None: 
             assert (len(times) - len(times_enter)) == 0
 
 
-    def fit(self): 
+    def fit(self, method = None): 
         try:
             """
             Fits the data provided to either kaplan-meier estimator for default or survival function, 
@@ -35,11 +35,14 @@ class univariateEstimator:
             Returns: 
             self(class object): adds the relevant survival analysis attributes upon completion
             """
+            if method is None: 
+                method = self.survival_method
+
             self.timepoints, self.n_at_risk, self.n_events = self.get_counts(self.times, self.events, self.times_enter, self.weights)
 
-            if self.type == 'kaplan-meier': 
+            if method == 'kaplan-meier': 
                 self.surv_func, self.surv_variance, self.surv_se = self.kaplanmeier(self.timepoints, self.n_at_risk, self.n_events)
-            elif self.type == 'nelson-aalen': 
+            elif method == 'nelson-aalen': 
                 self.cumhaz, self.cumhaz_variance, self.cumhaz_se = self.nelsonaalen(self.timepoints, self.n_at_risk, self.n_events)
 
             return
@@ -129,7 +132,7 @@ class univariateEstimator:
             n_at_risk = np.zeros(len(timepoints))
             n_events  = np.zeros(len(timepoints))
             if weights is None: 
-                weights = np.ones(len(self.n_sample))
+                weights = np.ones(self.n_sample)
             else: 
                 total_n = np.sum(weights)
 
@@ -163,92 +166,141 @@ class univariateEstimator:
                 n_events[i] = n_death
 
             return timepoints, n_at_risk, n_events
+        except Exception as e: 
+                print("Failed to get counts: {}".format(e))
 
-        def get_confidence_intervals_surv(self, method = 'log', alpha = 0.05): 
-            """
-            Default method is log because Klein-NMoeschberger provides thta log & 
-            arcsine-qrt provide better estimate.
-            Computation of the confidence interval for the survival function based on 
-            Klein-Moeschberger (1999), page 104-105 *coughlibgenifyoudonthaveitcough*
-            """
-            try: 
-                if alpha > 1: 
-                    print("Ensure alpha is a float between 0.0 and 1.0")
-                    print("Automatically converting alpha to percentile...")
-                    alpha = alpha/100
 
-                sigma_surv  = np.sqrt(self.surv_variance/np.square(self.surv_func))
-                z_alpha = norm.ppf(1 - alpha/2)
+    def get_confidence_intervals_surv(self, method = 'log', alpha = 0.05): 
+        """
+        Default method is log because Klein-NMoeschberger provides thta log & 
+        arcsine-qrt provide better estimate.
+        Computation of the confidence interval for the survival function based on 
+        Klein-Moeschberger (1999), page 104-105 *coughlibgenifyoudonthaveitcough*
+        """
+        try: 
+            if alpha > 1: 
+                print("Ensure alpha is a float between 0.0 and 1.0")
+                print("Automatically converting alpha to percentile...")
+                alpha = alpha/100
 
-                if method == 'linear': 
-                    lower_bound = self.surv_func - (z_alpha * sigma_surv * self.surv_func)
-                    upper_bound = self.surv_func + (z_alpha * sigma_surv * self.surv_func)
+            sigma_surv  = np.sqrt(self.surv_variance/np.square(self.surv_func))
+            z_alpha = norm.ppf(1 - alpha/2)
 
-                elif method == 'log': 
-                    theta = np.exp(z_alpha * sigma_surv/ np.log(self.surv_func))
-                    lower_bound = np.power(self.surv_func, 1/theta )
-                    upper_bound = np.pwoer(self.surv_func, theta)
+            if method == 'linear': 
+                lower_bound = self.surv_func - (z_alpha * sigma_surv * self.surv_func)
+                upper_bound = self.surv_func + (z_alpha * sigma_surv * self.surv_func)
 
-                elif method == 'arcsinesqrt': 
-                    arcsine_cplmt = 0.5 * z_alpha * sigma_surv * np.sqrt(self.surv_func/ 1 - self.surv_func)
+            elif method == 'log': 
+                theta = np.exp(z_alpha * sigma_surv/ np.log(self.surv_func))
+                lower_bound = np.power(self.surv_func, 1/theta )
+                upper_bound = np.power(self.surv_func, theta)
 
-                    lower_bound = np.maximum(0, np.arcsin(np.sqrt(self.surv_func) - arcsine_cplmt))
-                    lower_bound = np.square(np.sin(lower_bound))
+            elif method == 'arcsinesqrt': 
+                arcsine_cplmt = 0.5 * z_alpha * sigma_surv * np.sqrt(self.surv_func/ (1 - self.surv_func))
 
-                    upper_bound = np.minimum(np.pi/2, np.arcsin(np.sqrt(self.surv_func) + arcsine_cplmt))
-                    upper_bound = np.square(np.sin(upper_bound))
+                lower_bound = np.maximum(0, np.arcsin(np.sqrt(self.surv_func) - arcsine_cplmt))
+                lower_bound = np.square(np.sin(lower_bound))
 
-                else: 
-                    print("Method not supported at the moment. kthxbye")
-                
-                return lower_bound, upper_bound
+                upper_bound = np.minimum(np.pi/2, np.arcsin(np.sqrt(self.surv_func) + arcsine_cplmt))
+                upper_bound = np.square(np.sin(upper_bound))
 
-            except Exception as e: 
-                print("Failed to compute CI for survival: {}".format(e))
+            else: 
+                print("Method not supported at the moment. kthxbye")
+            
+            return lower_bound, upper_bound
+
+        except Exception as e: 
+            print("Failed to compute CI for survival: {}".format(e))
+
+    def get_confidence_intervals_cumhaz(self, method = 'log', alpha = 0.05): 
+        """
+        Default method is log because Klein-NMoeschberger provides that log & 
+        arcsine-qrt provide better estimate than the linear
+        Computation of the confidence interval for the cumulative hazard function based on 
+        Klein-Moeschberger (1999), page 107 *coughlibgenifyoudonthaveitcough*
+        """
+        try: 
+            if alpha > 1: 
+                print("Ensure alpha is a float between 0.0 and 1.0")
+                print("Automatically converting alpha to percentile...")
+                alpha = alpha/100
+
+            if self.cumhaz is None:
+                self.fit(method = 'nelson-aalen')
+
+
+            sigma_cumhaz  = np.sqrt(self.cumhaz_variance/np.square(self.cumhaz))
+            z_alpha = norm.ppf(1 - alpha/2)
+
+            if method == 'linear': 
+                lower_bound = self.cumhaz - (z_alpha * sigma_cumhaz)
+                upper_bound = self.surv_func + (z_alpha * sigma_cumhaz)
+
+            elif method == 'log': 
+                theta = np.exp(z_alpha * sigma_cumhaz/ self.cumhaz)
+                lower_bound = self.cumhaz / theta
+                upper_bound = self.cumhaz * theta
+
+            elif method == 'arcsinesqrt': 
+                arcsine_cplmt = 0.5 * z_alpha * sigma_cumhaz * np.sqrt(np.exp(self.cumhaz) - 1)
+
+                lower_bound = np.minimum(np.pi/2, np.arcsin(np.exp( - self.cumhaz/2)) + arcsine_cplmt)
+                lower_bound = -2 * np.log(np.sin(lower_bound))
+
+                upper_bound = np.minimum(np.pi/2, np.arcsin(np.sqrt(self.cumhaz) + arcsine_cplmt))
+                upper_bound = -2 * np.log(np.sin(upper_bound))
+
+            else: 
+                print("Method not supported at the moment. kthxbye")
+            
+            return lower_bound, upper_bound
+
+        except Exception as e: 
+            print("Failed to compute CI for survival: {}".format(e))
 
         
-        def get_confidence_intervals_quantile(self, q, method = 'linear', alpha = 0.05): 
-            """
-            Adapted mostly from the statsmodel computation of confidence interval, 
-            which is the approach used in SAS. 
-            """
-            try: 
-                assert (q > 0) & (q <=1)
+    def get_confidence_intervals_quantile(self, q, method = 'linear', alpha = 0.05): 
+        """
+        Adapted mostly from the statsmodel computation of confidence interval, 
+        which is the approach used in SAS. 
+        """
+        try: 
+            assert (q > 0) & (q <=1)
 
-                if self.surv_func is None: 
-                    self.get_fits()
+            if self.surv_func is None: 
+                self.get_fits()
 
-                tr = norm.ppf(1 - alpha / 2)
+            tr = norm.ppf(1 - alpha / 2)
 
-                method = method.lower()
-                
-                if method == "linear":
-                    g = lambda x: x
-                    g_prime = lambda x: 1
-                elif method == "log":
-                    g = lambda x: np.log(x)
-                    g_prime = lambda x: 1 / x
-                elif method == "arcsinesqrt":
-                    g = lambda x: np.arcsin(np.sqrt(x))
-                    g_prime = lambda x: 1 / (2 * np.sqrt(x) * np.sqrt(1 - x))
-                else:
-                    raise ValueError("unknown method")
+            method = method.lower()
+            
+            if method == "linear":
+                g = lambda x: x
+                g_prime = lambda x: 1
+            elif method == "log":
+                g = lambda x: np.log(x)
+                g_prime = lambda x: 1 / x
+            elif method == "arcsinesqrt":
+                g = lambda x: np.arcsin(np.sqrt(x))
+                g_prime = lambda x: 1 / (2 * np.sqrt(x) * np.sqrt(1 - x))
+            else:
+                raise ValueError("unknown method")
 
-                r = g(self.surv_func) - g(1 - q)
-                r /= (g_prime(self.surv_func) * self.surv_se)
+            r = g(self.surv_func) - g(1 - q)
+            r /= (g_prime(self.surv_func) * self.surv_se)
 
-                ii = np.flatnonzero(np.abs(r) <= tr)
-                if len(ii) == 0:
-                    return np.nan, np.nan
+            ii = np.flatnonzero(np.abs(r) <= tr)
+            if len(ii) == 0:
+                return np.nan, np.nan
 
-                lb = self.timepoints[ii[0]]
+            lb = self.timepoints[ii[0]]
 
-                if ii[-1] == len(self.timepoints) - 1:
-                    ub = np.inf
-                else:
-                    ub = self.timepoints[ii[-1] + 1]
+            if ii[-1] == len(self.timepoints) - 1:
+                ub = np.inf
+            else:
+                ub = self.timepoints[ii[-1] + 1]
 
-                return lb, ub
+            return lb, ub
 
         except Exception as e: 
             print("failed helper function-> calculating confidence intervals for quantile {} :{}".format(q,e))
@@ -298,11 +350,12 @@ class univariateEstimator:
 
         Returns: 
         cumhaz(array-like float): 
-        cumhaz_var(array-like float):
+        cumhaz_variance(array-like float):
+        cumhaz_se(array-like float) : 
         """
         try: 
             cumhaz = np.zeros(len(timepoints))
-            cumhaz_var = np.zeros(len(timepoints))
+            cumhaz_variance = np.zeros(len(timepoints))
             cumhaz_se = np.zeros(len(timepoints))
 
             est_cumhaz = 0
@@ -312,10 +365,10 @@ class univariateEstimator:
                 est_cumhaz += n_events[i]/n_at_risk[i]
                 cumhaz[i] = est_cumhaz
                 cumhaz_var_term += n_events[i]/ (n_at_risk[i] * n_at_risk[i])
-                cumhaz_var[i] = cumhaz_var_term
+                cumhaz_variance[i] = cumhaz_var_term
                 cumhaz_se[i] = np.sqrt(cumhaz_var_term)
 
-            return cumhaz, cumhaz_var, cumhaz_se
+            return cumhaz, cumhaz_variance, cumhaz_se
         except Exception as e: 
             print("Failed estimating using Nelson-Aalen's method: {}".format(e))
 
@@ -379,17 +432,21 @@ class univariateEstimator:
         def probability_at(times, tail_method = 'gill', interpolation_method = 'numpy', interpolation_argdict = None): 
             try: 
                 self.get_fits()
+                if tail_method == 'brown-kollander-kowar' or tail_method == 'bhk': 
+                    tail_method = 'brown'
 
                 if tail_method == 'gill': 
                     prob_beyond_tmax = self.surv_func[-1]
                 elif tail_method == 'efron': 
                     prob_beyond_tmax = 0
-                elif tail_method == 'brown'
                 else: 
                     raise ValueError
 
                 if isinstance(times, int) | isinstance(times, float): 
-                    if times > self.timepoints[-1]: 
+                    if times > self.timepoints[-1]:
+                        if tail_method == 'brown':
+                            prob_beyond_tmax = np.exp(times * np.log(self.surv_func[-1])/self.timepoints[-1])
+
                         return prob_beyond_tmax
                     else: 
                         if interpolation_method == 'numpy': 
@@ -419,6 +476,8 @@ class univariateEstimator:
 
                             
                     for arr_index, times in zip(t_beyond_tmax_idx, times[~interp_mask]): 
+                        if tail_method == 'brown': 
+                            prob_beyond_tmax = np.exp(times * np.log(self.surv_func[-1])/self.timepoints[-1])
                         prob[arr_index] = prob_beyond_tmax
 
                     return prob
