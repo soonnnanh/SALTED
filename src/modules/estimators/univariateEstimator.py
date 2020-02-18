@@ -1,17 +1,21 @@
 import os, sys
 import numpy as np
 import pandas as pd
+from scipy import stats 
+
+from scipy.stats.distributions import chi2, norm
 
 os.chdir("./src")
 from modules.helpers.plotters import plotCustomiser
 
 class univariateEstimator:
-    def __init__(self, times=None, events=None, times_enter = None, type = 'kaplan-meier'):
+    def __init__(self, times=None, events=None, times_enter = None, weights = None, type = 'kaplan-meier'):
 
 
         self.times = times
         self.events = events
         self.times_enter = times_enter
+        self.weights = weights
         self.type = type
 
         assert len(times) == len(events)
@@ -31,7 +35,7 @@ class univariateEstimator:
             Returns: 
             self(class object): adds the relevant survival analysis attributes upon completion
             """
-            self.timepoints, self.n_at_risk, self.n_events = self.get_counts(self.times, self.events, self.times_enter)
+            self.timepoints, self.n_at_risk, self.n_events = self.get_counts(self.times, self.events, self.times_enter, self.weights)
 
             if self.type == 'kaplan-meier': 
                 self.surv_func, self.surv_variance, self.surv_se = self.kaplanmeier(self.timepoints, self.n_at_risk, self.n_events)
@@ -84,7 +88,7 @@ class univariateEstimator:
             if self.surv_func is None: 
                 if self.cumhaz is not None: 
                     self.surv_func = np.exp(-self.cumhaz)
-                    self.surv_var = self.cumhaz_variance/ np.square((self.surv_func))
+                    self.surv_variance = self.cumhaz_variance/ np.square((self.surv_func))
                     self.surv_se = np.asarray(self.cumhaz_se) / np.asarray(self.surv_func)
                 else:
                     print("Survival time for probability of interest cannot be estimated if there is no survival function")
@@ -94,7 +98,7 @@ class univariateEstimator:
         except Exception as e: 
             print("Unknown error occured while trying to get fitted estimators : {}".format(e))
     
-    def get_counts(self, times, events, times_enter):
+    def get_counts(self, times, events, times_enter, weights = None):
         try:
             """
             Calculates the number of the population at risk and those who are dead at each unique time point. 
@@ -114,6 +118,7 @@ class univariateEstimator:
 
 
             self.n_sample = len(times)
+            total_n = self.n_sample
             if times_enter is not None: 
                 times, events, times_enter = np.asarray(times), np.asarray(events), np.asarray(times_enter)
                 timepoints = np.sort(np.unique(np.concatenate((times_enter, times))), kind="mergesort")
@@ -123,33 +128,85 @@ class univariateEstimator:
 
             n_at_risk = np.zeros(len(timepoints))
             n_events  = np.zeros(len(timepoints))
+            if weights is None: 
+                weights = np.ones(len(self.n_sample))
+            else: 
+                total_n = np.sum(weights)
 
             t0 = timepoints[0]
             n_death = 0 
             sum_events = 0 
             sum_entry = 0 
+
+            #For all unique timepoints, get the indexes of the event array equal to the timepoint array 
             for i in range(len(timepoints)):
-                n_at_risk[i] = self.n_sample - sum_events + sum_entry
+                #t_0 timepoint has no event occuring 
+                n_at_risk[i] = total_n - sum_events + sum_entry
                 t_i_event_index = np.where(times == timepoints[i])[0]
+                 # Compute the number of patients entering 
                 if (i != 0) & (times_enter is not None) : 
-                    t_i_entry_index = np.where(times_enter == timepoints[i])[0]
+                    t_i_entry_index = np.where(times_enter == timepoints[i])[0] 
                     try:
-                        n_entry_t_i = len(t_i_entry_index)
+                        n_entry_t_i = np.sum(weights[t_i_entry_index])
                     except:
                         n_entry_t_i = 0 
                 else: 
                     n_entry_t_i = 0
                 t_i_n_events = events[t_i_event_index]
-                # print(t_i_n_events)
-                n_death = np.sum(t_i_n_events)
-                n_event_i = len(t_i_n_events)
+                #Compute the number of deaths & number of events happening.
+                #If there are no weights, the sum of the weights is the number of samples 
+                #whose event occured at time t_i.  
+                n_death = np.sum(t_i_n_events * weights[t_i_event_index])
+                n_event_i = np.sum(weights[t_i_event_index])
                 sum_entry += n_entry_t_i
                 sum_events += n_event_i
-                # n_at_risk[i] = self.n_sample - sum_events + sum_entry
                 n_events[i] = n_death
 
             return timepoints, n_at_risk, n_events
 
+        def get_confidence_intervals_surv(self, method = 'log', alpha = 0.05): 
+            """
+            Default method is log because Klein-NMoeschberger provides thta log & 
+            arcsine-qrt provide better estimate.
+            Computation of the confidence interval for the survival function based on 
+            Klein-Moeschberger (1999), page 104-105 *coughlibgenifyoudonthaveitcough*
+            """
+            try: 
+                if alpha > 1: 
+                    print("Ensure alpha is a float between 0.0 and 1.0")
+                    print("Automatically converting alpha to percentile...")
+                    alpha = alpha/100
+
+                sigma_surv  = np.sqrt(self.surv_variance/np.square(self.surv_func))
+                z_alpha = norm.ppf(1 - alpha/2)
+
+                if method == 'linear': 
+                    lower_bound = self.surv_func - (z_alpha * sigma_surv * self.surv_func)
+                    upper_bound = self.surv_func + (z_alpha * sigma_surv * self.surv_func)
+
+                elif method == 'log': 
+                    theta = np.exp(z_alpha * sigma_surv/ np.log(self.surv_func))
+                    lower_bound = np.power(self.surv_func, 1/theta )
+                    upper_bound = np.pwoer(self.surv_func, theta)
+
+                elif method == 'arcsinesqrt': 
+                    arcsine_cplmt = 0.5 * z_alpha * sigma_surv * np.sqrt(self.surv_func/ 1 - self.surv_func)
+
+                    lower_bound = np.maximum(0, np.arcsin(np.sqrt(self.surv_func) - arcsine_cplmt))
+                    lower_bound = np.square(np.sin(lower_bound))
+
+                    upper_bound = np.minimum(np.pi/2, np.arcsin(np.sqrt(self.surv_func) + arcsine_cplmt))
+                    upper_bound = np.square(np.sin(upper_bound))
+
+                else: 
+                    print("Method not supported at the moment. kthxbye")
+                
+                return lower_bound, upper_bound
+
+            except Exception as e: 
+                print("Failed to compute CI for survival: {}".format(e))
+
+        
         def get_confidence_intervals_quantile(self, q, method = 'linear', alpha = 0.05): 
             """
             Adapted mostly from the statsmodel computation of confidence interval, 
@@ -327,6 +384,7 @@ class univariateEstimator:
                     prob_beyond_tmax = self.surv_func[-1]
                 elif tail_method == 'efron': 
                     prob_beyond_tmax = 0
+                elif tail_method == 'brown'
                 else: 
                     raise ValueError
 
